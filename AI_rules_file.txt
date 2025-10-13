@@ -335,6 +335,405 @@ curl -X POST http://localhost:8000/api/summarize_logs \
 6. **Execute request** using the curl command
 7. **Parse and present results** in a clear, structured format
 
+## 🔭 PERISCOPE INTEGRATION - SQL-BASED LOG ANALYSIS
+
+### 📊 Overview
+Periscope is a separate log analysis system that uses SQL queries instead of KQL. It provides:
+- SQL-based querying for logs
+- Stream-based organization (envoy_logs, vayu_logs, etc.)
+- Schema discovery with field types and statistics
+- Time-based filtering in microseconds
+
+### 🔑 Authentication Setup (Required First Step)
+```bash
+curl -X POST http://localhost:8000/api/set_periscope_auth_token \
+  -H "Content-Type: application/json" \
+  -d '{"auth_token":"YOUR_PERISCOPE_AUTH_TOKEN_HERE"}'
+```
+
+**Note:** The Periscope auth token is the base64-encoded `auth_tokens` cookie value from your Periscope session.
+
+### 📋 Available Periscope Endpoints
+
+| Endpoint | Purpose | Key Parameters |
+|----------|---------|----------------|
+| `/api/set_periscope_auth_token` | Set Periscope authentication | `auth_token` |
+| `/api/get_periscope_streams` | List available log streams | `org_identifier` (optional) |
+| `/api/get_periscope_stream_schema` | Get schema for a specific stream | `stream_name`, `org_identifier` |
+| `/api/get_all_periscope_schemas` | Get schemas for all streams | `org_identifier` (optional) |
+| `/api/search_periscope_logs` | **MAIN ENDPOINT** - Search using SQL | `sql_query`, `start_time`, `end_time`, `max_results` |
+| `/api/search_periscope_errors` | Find error logs (4xx/5xx) | `hours`, `stream`, `error_codes` |
+
+### 🔍 Step-by-Step Workflow
+
+#### 1. Discover Available Streams
+```bash
+curl -X GET http://localhost:8000/api/get_periscope_streams
+```
+
+**Common Streams:**
+- `envoy_logs` - Envoy proxy access logs (HTTP requests/responses)
+- `vayu_logs` - Vayu service logs
+- `breeze_logs` - Breeze application logs
+- `lighthouse_logs` - Lighthouse service logs
+- `nimble_logs` - Nimble service logs
+- `istio_logs` - Istio service mesh logs
+- `squid_logs` - Squid proxy logs
+
+#### 2. Get Schema for a Stream
+```bash
+curl -X POST http://localhost:8000/api/get_periscope_stream_schema \
+  -H "Content-Type: application/json" \
+  -d '{
+    "stream_name": "envoy_logs"
+  }'
+```
+
+**Returns:**
+- Field names and types (e.g., `status_code: Utf8`, `timestamp: Int64`)
+- Statistics (doc count, time range, storage size)
+- Settings (retention, partitioning)
+
+#### 3. Search Logs with SQL
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT * FROM \"envoy_logs\" WHERE status_code LIKE '\''5%'\''",
+    "start_time": "24h",
+    "max_results": 50
+  }'
+```
+
+### 📝 SQL Query Syntax
+
+**Basic Query Structure:**
+```sql
+SELECT * FROM "stream_name" WHERE condition
+```
+
+**Important:**
+- Stream names must be in double quotes: `"envoy_logs"`
+- String literals use single quotes: `'value'`
+- In curl commands, escape quotes: `'\''value'\''`
+
+**Common Query Patterns:**
+
+1. **Search by Status Code:**
+```sql
+SELECT * FROM "envoy_logs" WHERE status_code LIKE '5%'
+```
+
+2. **Search by Method and Path:**
+```sql
+SELECT * FROM "envoy_logs" WHERE method = 'POST' AND path LIKE '/api%'
+```
+
+3. **Search by Session ID:**
+```sql
+SELECT * FROM "vayu_logs" WHERE session_id = 'your-session-id'
+```
+
+4. **Search by Time Range and Condition:**
+```sql
+SELECT * FROM "envoy_logs" WHERE status_code >= 400 AND method = 'GET'
+```
+
+5. **Limit Results:**
+```sql
+SELECT * FROM "envoy_logs" WHERE status_code = '500' LIMIT 10
+```
+
+### ⏰ Time Format Options & Timezone Support
+
+Periscope uses **microseconds** since epoch internally, but the API accepts flexible formats with **full timezone support**:
+
+1. **Relative Time:** `"24h"`, `"1d"`, `"7d"`, `"1w"`, `"1m"`
+2. **ISO Timestamps with Timezone:**
+   - UTC: `"2025-10-04T04:50:00Z"` or `"2025-10-04T04:50:00+00:00"`
+   - IST: `"2025-10-04T10:20:00+05:30"`
+   - US Eastern: `"2025-10-04T00:50:00-05:00"`
+3. **Naive Datetime with Timezone Parameter:**
+   - `"2025-10-04 10:20:00"` with `"timezone": "Asia/Kolkata"`
+   - `"2025-10-04T10:20:00"` with `"timezone": "Asia/Kolkata"`
+4. **Microseconds:** `1759527600000000`
+
+**🌍 NEW TIMEZONE FEATURE:**
+
+You can now specify times in any timezone and the system will automatically convert to UTC microseconds:
+
+```bash
+# Using IST (India Standard Time) directly - NO manual UTC conversion needed!
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT COUNT(*) FROM \"envoy_logs\"",
+    "start_time": "2025-10-04 10:20:00",
+    "end_time": "2025-10-04 11:00:00",
+    "timezone": "Asia/Kolkata"
+  }'
+
+# Alternative: ISO format with timezone offset (no timezone parameter needed)
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT COUNT(*) FROM \"envoy_logs\"",
+    "start_time": "2025-10-04T10:20:00+05:30",
+    "end_time": "2025-10-04T11:00:00+05:30"
+  }'
+```
+
+**Common Timezone Names:**
+- India: `"Asia/Kolkata"` or `"Asia/Calcutta"`
+- UTC: `"UTC"`
+- US Eastern: `"US/Eastern"` or `"America/New_York"`
+- US Pacific: `"US/Pacific"` or `"America/Los_Angeles"`
+- Singapore: `"Asia/Singapore"`
+- UK: `"Europe/London"`
+
+**Examples:**
+```bash
+# Last 24 hours
+"start_time": "24h"
+
+# Last 7 days
+"start_time": "7d"
+
+# Specific date range in UTC
+"start_time": "2025-10-01T00:00:00Z",
+"end_time": "2025-10-03T00:00:00Z"
+
+# Specific date range in IST using timezone parameter
+"start_time": "2025-10-04 10:20:00",
+"end_time": "2025-10-04 11:00:00",
+"timezone": "Asia/Kolkata"
+
+# Microseconds (always UTC)
+"start_time": 1759440000000000,
+"end_time": 1759527600000000
+```
+
+**IMPORTANT NOTES:**
+- If `timezone` parameter is provided with naive datetime, it will be applied
+- If datetime has explicit timezone (like `+05:30`), timezone parameter is ignored
+- Naive datetimes without timezone parameter default to UTC
+- All conversions result in UTC microseconds internally
+- The `_timestamp` field in logs may be in local server time (check your specific logs)
+
+### 🔴 Finding Errors - Convenience Function
+
+For quickly finding 4xx/5xx errors:
+
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_errors \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hours": 24,
+    "stream": "envoy_logs",
+    "error_codes": "5%"
+  }'
+```
+
+**Parameters:**
+- `hours`: Number of hours to look back (default: 24)
+- `stream`: Stream name (default: "envoy_logs")
+- `error_codes`: Pattern like `"4%"` (4xx), `"5%"` (5xx), or `null` for all >=400
+- `org_identifier`: Organization (default: "default")
+
+### 📊 Complete Examples
+
+#### Example 1: Find All 5xx Errors in Last 24 Hours
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_errors \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hours": 24,
+    "stream": "envoy_logs",
+    "error_codes": "5%"
+  }'
+```
+
+#### Example 2: Search for Specific Endpoint Errors
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT * FROM \"envoy_logs\" WHERE path LIKE '\''/api/payment%'\'' AND status_code >= 400",
+    "start_time": "24h",
+    "max_results": 100
+  }'
+```
+
+#### Example 3: Analyze Slow Requests
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT * FROM \"envoy_logs\" WHERE duration_ms > 1000 ORDER BY duration_ms DESC LIMIT 50",
+    "start_time": "24h"
+  }'
+```
+
+#### Example 4: Find Requests by Session ID
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT * FROM \"vayu_logs\" WHERE session_id = '\''abc-123-def'\''",
+    "start_time": "7d",
+    "max_results": 200
+  }'
+```
+
+#### Example 5: Get All Schemas for Reference
+```bash
+curl -X GET http://localhost:8000/api/get_all_periscope_schemas
+```
+
+### 🎯 Common Use Cases
+
+**1. Error Analysis:**
+- Find all 5xx errors: `WHERE status_code LIKE '5%'`
+- Find specific error: `WHERE status_code = '500'`
+- Find client errors: `WHERE status_code LIKE '4%'`
+
+**2. Performance Analysis:**
+- Slow requests: `WHERE duration_ms > 1000`
+- Fast requests: `WHERE duration_ms < 100`
+- Average duration: Use aggregation functions
+
+**3. Traffic Analysis:**
+- By endpoint: `WHERE path LIKE '/api/specific%'`
+- By method: `WHERE method = 'POST'`
+- By user agent: `WHERE user_agent LIKE '%Chrome%'`
+
+**4. Session Tracking:**
+- All session logs: `WHERE session_id = 'session-id'`
+- Session with errors: `WHERE session_id = 'session-id' AND status_code >= 400`
+
+### 🔄 Periscope vs Kibana Decision Flow
+
+**Use Periscope when:**
+- ✅ You need SQL-based querying
+- ✅ Analyzing HTTP access logs (envoy_logs)
+- ✅ Need schema information and field types
+- ✅ Working with structured log data
+- ✅ Need precise time-based filtering
+
+**Use Kibana when:**
+- ✅ You need KQL-based querying
+- ✅ Working with application logs
+- ✅ Need session-based tracking
+- ✅ Following existing Kibana workflows
+- ✅ Need AI-powered summarization
+
+### ⚠️ Important Notes
+
+1. **Stream Names:** Always use double quotes around stream names in SQL
+2. **String Values:** Use single quotes for string literals in WHERE clauses
+3. **Time Range:** Periscope uses microseconds internally but accepts flexible formats
+4. **Default Org:** Most queries use `org_identifier: "default"` unless specified
+5. **Field Names:** Check schema first to know available fields and types
+6. **Escaping:** In curl commands with bash, escape single quotes as `'\''`
+
+### 🧪 Testing Your Setup
+
+1. **Test Authentication:**
+```bash
+curl -X POST http://localhost:8000/api/set_periscope_auth_token \
+  -H "Content-Type: application/json" \
+  -d '{"auth_token":"your-token"}'
+```
+
+2. **List Streams:**
+```bash
+curl -X GET http://localhost:8000/api/get_periscope_streams
+```
+
+3. **Get Schema:**
+```bash
+curl -X POST http://localhost:8000/api/get_periscope_stream_schema \
+  -H "Content-Type: application/json" \
+  -d '{"stream_name": "envoy_logs"}'
+```
+
+4. **Search for Errors:**
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_errors \
+  -H "Content-Type: application/json" \
+  -d '{"hours": 1, "stream": "envoy_logs", "error_codes": "5%"}'
+```
+
+### 🔍 Complete RCA Example Using Timezone Feature
+
+**Scenario:** CPU spike alert at 10:45 AM IST on Oct 4, 2025. Investigate 10:20-11:00 AM IST window.
+
+**Step 1: Set Authentication**
+```bash
+curl -X POST http://localhost:8000/api/set_periscope_auth_token \
+  -H "Content-Type: application/json" \
+  -d '{"auth_token":"your-periscope-token"}'
+```
+
+**Step 2: Get Total Traffic (Using NEW Timezone Feature)**
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT COUNT(*) as total_logs FROM \"envoy_logs\"",
+    "start_time": "2025-10-04 10:20:00",
+    "end_time": "2025-10-04 11:00:00",
+    "timezone": "Asia/Kolkata",
+    "max_results": 1
+  }'
+```
+
+**Step 3: Find Peak Traffic Minutes**
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT COUNT(*) as req_per_minute, CAST(_timestamp / 60000000 AS BIGINT) as minute_bucket FROM \"envoy_logs\" GROUP BY minute_bucket ORDER BY req_per_minute DESC LIMIT 5",
+    "start_time": "2025-10-04 10:20:00",
+    "end_time": "2025-10-04 11:00:00",
+    "timezone": "Asia/Kolkata",
+    "max_results": 5
+  }'
+```
+
+**Step 4: Analyze Failures**
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT COUNT(*) as failure_count, upstream_host FROM \"envoy_logs\" WHERE response_flags = '\''DC'\'' GROUP BY upstream_host ORDER BY failure_count DESC",
+    "start_time": "2025-10-04 10:20:00",
+    "end_time": "2025-10-04 11:00:00",
+    "timezone": "Asia/Kolkata",
+    "max_results": 10
+  }'
+```
+
+**Step 5: Error Breakdown**
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT COUNT(*) as error_count, response_flags, status_code FROM \"envoy_logs\" WHERE status_code >= '\''400'\'' OR status_code = '\''0'\'' GROUP BY response_flags, status_code ORDER BY error_count DESC",
+    "start_time": "2025-10-04 10:20:00",
+    "end_time": "2025-10-04 11:00:00",
+    "timezone": "Asia/Kolkata",
+    "max_results": 10
+  }'
+```
+
+**Benefits of Using Timezone Parameter:**
+- ✅ No manual UTC conversion required
+- ✅ Search using local business hours (IST)
+- ✅ Easier to correlate with alerts and monitoring dashboards
+- ✅ Reduces human error in timezone calculations
+- ✅ Works with any IANA timezone name
+
 ## 📌 IMPORTANT NOTES
 
 - Always replace `{session_id}` with the actual session ID in queries
@@ -342,6 +741,8 @@ curl -X POST http://localhost:8000/api/summarize_logs \
 - Include relevant context in queries to narrow results
 - Use field filters (`include_fields` and `exclude_fields`) for large result sets
 - Set appropriate `max_results` to balance detail vs. performance
+- **For Periscope:** Use SQL syntax and check stream schemas first
+- **For Periscope:** Time values can be relative ("24h"), ISO, or microseconds
 
 ## ⚠️ TROUBLESHOOTING COMMON ERRORS
 

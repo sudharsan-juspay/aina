@@ -47,6 +47,9 @@ CURRENT_INDEX = None
 # Store the dynamic config overrides
 DYNAMIC_CONFIG_OVERRIDES = {}
 
+# Store the dynamic Periscope auth token
+PERISCOPE_AUTH_TOKEN = None
+
 # Load configuration
 def load_config(config_path: str = None) -> Dict:
     """Load the configuration from a YAML file."""
@@ -89,6 +92,11 @@ kibana_base_path = es_config.get("kibana_api", {}).get("base_path", "/_plugin/ki
 def get_auth_token():
     global DYNAMIC_AUTH_TOKEN
     return DYNAMIC_AUTH_TOKEN or os.environ.get("KIBANA_AUTH_COOKIE") or es_config.get("auth_cookie", "")
+
+# Get Periscope auth token (with dynamic token support)
+def get_periscope_auth_token():
+    global PERISCOPE_AUTH_TOKEN
+    return PERISCOPE_AUTH_TOKEN or os.environ.get("PERISCOPE_AUTH_TOKEN") or CONFIG.get("periscope", {}).get("auth_token", "")
 
 # Function to get a properly configured HTTP client
 def get_http_client():
@@ -1727,6 +1735,581 @@ def _generate_fallback_analysis(logs: List[Dict], is_function_based: bool = Fals
             "recommendations": ["Check system configuration"]
         }
 
+# === Periscope Time Conversion Helpers ===
+
+def convert_time_to_microseconds(time_input: Union[str, int, None], timezone: Optional[str] = None) -> int:
+    """
+    Convert various time formats to microseconds since epoch.
+
+    Args:
+        time_input: Can be:
+            - None (returns current time)
+            - int (assumed to be microseconds)
+            - "2h", "1d", "7d" (relative time from now)
+            - ISO 8601 timestamp string (with or without timezone)
+            - Naive datetime string like "2025-10-04 10:20:00" (requires timezone param)
+        timezone: Optional timezone name (e.g., 'Asia/Kolkata', 'UTC', 'US/Eastern')
+                  Used when time_input is a naive datetime string without timezone info.
+                  If not provided and time_input is naive, assumes UTC.
+
+    Returns:
+        Microseconds since epoch (always in UTC)
+
+    Examples:
+        >>> convert_time_to_microseconds("2025-10-04T10:20:00+05:30")  # IST with offset
+        >>> convert_time_to_microseconds("2025-10-04T10:20:00", "Asia/Kolkata")  # IST naive
+        >>> convert_time_to_microseconds("2025-10-04T04:50:00Z")  # UTC with Z
+        >>> convert_time_to_microseconds("2h")  # 2 hours ago
+    """
+    if time_input is None:
+        return int(time.time() * 1000000)
+
+    if isinstance(time_input, int):
+        return time_input
+
+    # Handle relative time strings like "2h", "1d", "7d"
+    if isinstance(time_input, str):
+        import re
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        match = re.match(r'^(\d+)([hdwm])$', time_input.lower())
+        if match:
+            value = int(match.group(1))
+            unit = match.group(2)
+
+            now = time.time()
+            if unit == 'h':
+                seconds_ago = value * 3600
+            elif unit == 'd':
+                seconds_ago = value * 86400
+            elif unit == 'w':
+                seconds_ago = value * 604800
+            elif unit == 'm':
+                seconds_ago = value * 2592000  # 30 days
+            else:
+                seconds_ago = 0
+
+            return int((now - seconds_ago) * 1000000)
+
+        # Try to parse as ISO 8601 timestamp
+        try:
+            # Replace 'Z' with '+00:00' for proper timezone handling
+            normalized_input = time_input.replace('Z', '+00:00')
+
+            # Try parsing as timezone-aware datetime
+            try:
+                dt = datetime.fromisoformat(normalized_input)
+
+                # If the datetime is naive (no timezone info), apply the timezone parameter
+                if dt.tzinfo is None:
+                    if timezone:
+                        try:
+                            # Apply the specified timezone to the naive datetime
+                            tz = ZoneInfo(timezone)
+                            dt = dt.replace(tzinfo=tz)
+                            logger.debug(f"Applied timezone {timezone} to naive datetime {time_input}")
+                        except Exception as e:
+                            logger.warning(f"Invalid timezone '{timezone}': {e}. Assuming UTC.")
+                            dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+                    else:
+                        # Default to UTC for naive datetimes
+                        dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+                        logger.debug(f"Applied default UTC timezone to naive datetime {time_input}")
+
+                # Convert to microseconds (timestamp() always returns UTC epoch)
+                return int(dt.timestamp() * 1000000)
+
+            except ValueError:
+                # Try alternative datetime formats
+                # Format: "2025-10-04 10:20:00" (space instead of T)
+                try:
+                    dt = datetime.strptime(time_input, "%Y-%m-%d %H:%M:%S")
+                    if timezone:
+                        try:
+                            tz = ZoneInfo(timezone)
+                            dt = dt.replace(tzinfo=tz)
+                        except Exception as e:
+                            logger.warning(f"Invalid timezone '{timezone}': {e}. Assuming UTC.")
+                            dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+                    else:
+                        dt = dt.replace(tzinfo=ZoneInfo('UTC'))
+                    return int(dt.timestamp() * 1000000)
+                except ValueError:
+                    pass
+
+                raise
+
+        except Exception as e:
+            logger.warning(f"Could not parse time input '{time_input}': {e}")
+            return int(time.time() * 1000000)
+
+    return int(time.time() * 1000000)
+
+# === Periscope Helper Functions ===
+
+async def periscope_search(
+    sql_query: str,
+    start_time: Optional[int] = None,
+    end_time: Optional[int] = None,
+    size: int = 50,
+    org_identifier: str = "default"
+) -> Dict:
+    """
+    Execute a search query through Periscope API.
+
+    Args:
+        sql_query: SQL query to execute (will be base64 encoded)
+        start_time: Start time in microseconds (defaults to 24h ago)
+        end_time: End time in microseconds (defaults to now)
+        size: Number of results to return
+        org_identifier: Organization identifier
+
+    Returns:
+        Dict containing search results
+    """
+    import base64
+
+    # Get Periscope host from config
+    periscope_host = get_config_value('periscope.host', 'periscope.breezesdk.store')
+
+    # Build URL
+    url = f"https://{periscope_host}/api/{org_identifier}/_search?type=logs&search_type=ui&use_cache=true"
+
+    # Encode SQL query to base64
+    sql_base64 = base64.b64encode(sql_query.encode()).decode()
+
+    # Calculate default time range if not provided (last 24 hours in microseconds)
+    if not end_time:
+        end_time = int(time.time() * 1000000)
+    if not start_time:
+        start_time = end_time - (24 * 60 * 60 * 1000000)
+
+    # Build request payload
+    payload = {
+        "query": {
+            "sql": sql_base64,
+            "start_time": start_time,
+            "end_time": end_time,
+            "from": 0,
+            "size": size,
+            "quick_mode": False,
+            "sql_mode": "full"
+        },
+        "encoding": "base64"
+    }
+
+    # Set headers
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "origin": f"https://{periscope_host}"
+    }
+
+    # Get auth token
+    auth_token = get_periscope_auth_token()
+    if not auth_token:
+        logger.error("No Periscope authentication token available")
+        return {"error": "No Periscope authentication token available"}
+
+    # Set cookies
+    cookies = {"auth_tokens": auth_token}
+
+    logger.debug(f"Periscope search request: {json.dumps(payload)}")
+
+    # Execute request with retry logic
+    max_retries = 3
+    retry_count = 0
+    last_error = None
+
+    async with get_http_client() as client:
+        while retry_count < max_retries:
+            try:
+                response = await client.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    cookies=cookies,
+                    timeout=20
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    logger.debug(f"Periscope search response status: 200 OK")
+                    return result
+                else:
+                    error_text = response.text
+                    logger.error(f"Periscope search failed: {response.status_code} {error_text}")
+                    last_error = f"{response.status_code}: {error_text}"
+
+                    if response.status_code in (401, 403):
+                        logger.error("Periscope authentication failed")
+                        last_error = "Authentication failed. Check your Periscope auth token."
+                        break
+
+            except Exception as e:
+                logger.error(f"Error during Periscope search: {str(e)}")
+                logger.error(f"Stack trace: {traceback.format_exc()}")
+                last_error = str(e)
+
+            retry_count += 1
+            if retry_count < max_retries:
+                logger.warning(f"Retrying Periscope search ({retry_count}/{max_retries})...")
+                await asyncio.sleep(1)
+
+    return {
+        "error": f"Periscope API request failed after {max_retries} retries.",
+        "details": last_error
+    }
+
+# === Periscope MCP Tools ===
+
+@mcp.tool()
+async def set_periscope_auth_token(auth_token: str, ctx: Context = None) -> Dict:
+    """
+    Set the Periscope authentication token for the current session.
+
+    Args:
+        auth_token: The auth_tokens value from Periscope (base64 encoded JSON)
+
+    Returns:
+        Dict with status information
+    """
+    global PERISCOPE_AUTH_TOKEN
+
+    try:
+        if not auth_token or auth_token.strip() == "":
+            return {
+                "success": False,
+                "message": "Authentication token cannot be empty"
+            }
+
+        old_token = PERISCOPE_AUTH_TOKEN
+        PERISCOPE_AUTH_TOKEN = auth_token
+
+        if old_token:
+            logger.info("Periscope authentication token updated")
+        else:
+            logger.info("Periscope authentication token set")
+
+        return {
+            "success": True,
+            "message": "Periscope authentication token updated successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"Error setting Periscope authentication token: {e}")
+        return {
+            "success": False,
+            "message": f"Error: {str(e)}"
+        }
+
+@mcp.tool()
+async def get_periscope_streams(
+    org_identifier: str = "default",
+    ctx: Context = None
+) -> Dict:
+    """
+    Get available Periscope log streams.
+
+    Args:
+        org_identifier: Organization identifier (default: "default")
+
+    Returns:
+        Dict containing available streams
+    """
+    try:
+        periscope_host = get_config_value('periscope.host', 'periscope.breezesdk.store')
+        url = f"https://{periscope_host}/api/{org_identifier}/streams?type=logs"
+
+        headers = {
+            "accept": "application/json"
+        }
+
+        auth_token = get_periscope_auth_token()
+        if not auth_token:
+            return {
+                "success": False,
+                "error": "No Periscope authentication token available"
+            }
+
+        cookies = {"auth_tokens": auth_token}
+
+        async with get_http_client() as client:
+            response = await client.get(url, headers=headers, cookies=cookies)
+
+            if response.status_code == 200:
+                streams = response.json()
+                return {
+                    "success": True,
+                    "streams": streams,
+                    "total": len(streams) if isinstance(streams, list) else 0,
+                    "org_identifier": org_identifier
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Failed to get streams: {response.status_code} {response.text}"
+                }
+
+    except Exception as e:
+        logger.error(f"Error getting Periscope streams: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@mcp.tool()
+async def get_periscope_stream_schema(
+    stream_name: str,
+    org_identifier: str = "default",
+    ctx: Context = None
+) -> Dict:
+    """
+    Get schema for a specific Periscope log stream.
+
+    Args:
+        stream_name: Name of the stream (e.g., "envoy_logs", "vayu_logs")
+        org_identifier: Organization identifier (default: "default")
+
+    Returns:
+        Dict containing stream schema with fields, stats, and settings
+    """
+    try:
+        periscope_host = get_config_value('periscope.host', 'periscope.breezesdk.store')
+        url = f"https://{periscope_host}/api/{org_identifier}/streams/{stream_name}/schema?type=logs"
+
+        headers = {
+            "accept": "application/json"
+        }
+
+        auth_token = get_periscope_auth_token()
+        if not auth_token:
+            return {
+                "success": False,
+                "error": "No Periscope authentication token available"
+            }
+
+        cookies = {"auth_tokens": auth_token}
+
+        async with get_http_client() as client:
+            response = await client.get(url, headers=headers, cookies=cookies)
+
+            if response.status_code == 200:
+                schema_data = response.json()
+                return {
+                    "success": True,
+                    "stream_name": stream_name,
+                    "schema": schema_data.get("schema", []),
+                    "stats": schema_data.get("stats", {}),
+                    "settings": schema_data.get("settings", {}),
+                    "total_fields": schema_data.get("total_fields", 0)
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Failed to get schema: {response.status_code} {response.text}"
+                }
+
+    except Exception as e:
+        logger.error(f"Error getting Periscope stream schema: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@mcp.tool()
+async def get_all_periscope_schemas(
+    org_identifier: str = "default",
+    ctx: Context = None
+) -> Dict:
+    """
+    Get schemas for all available Periscope log streams.
+    This is a convenience tool that lists all streams and fetches their schemas.
+
+    Args:
+        org_identifier: Organization identifier (default: "default")
+
+    Returns:
+        Dict containing all stream schemas
+    """
+    try:
+        # First, get all streams
+        streams_result = await get_periscope_streams(org_identifier, ctx)
+
+        if not streams_result.get("success"):
+            return streams_result
+
+        streams = streams_result.get("streams", [])
+        if not streams:
+            return {
+                "success": True,
+                "message": "No streams found",
+                "schemas": {}
+            }
+
+        # Fetch schema for each stream
+        schemas = {}
+        for stream in streams:
+            stream_name = stream.get("name") if isinstance(stream, dict) else stream
+            if stream_name:
+                schema_result = await get_periscope_stream_schema(stream_name, org_identifier, ctx)
+                if schema_result.get("success"):
+                    schemas[stream_name] = schema_result
+
+        return {
+            "success": True,
+            "total_streams": len(schemas),
+            "schemas": schemas,
+            "org_identifier": org_identifier
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting all Periscope schemas: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@mcp.tool()
+async def search_periscope_logs(
+    sql_query: str,
+    start_time: Optional[Union[str, int]] = None,
+    end_time: Optional[Union[str, int]] = None,
+    max_results: int = 50,
+    org_identifier: str = "default",
+    timezone: Optional[str] = None,
+    ctx: Context = None
+) -> Dict:
+    """
+    Search Periscope logs using SQL queries.
+
+    Args:
+        sql_query: SQL query to execute (e.g., 'SELECT * FROM "envoy_logs" WHERE status_code LIKE \'%50%\'')
+        start_time: Start time - can be microseconds (int), relative ("2h", "1d"), or ISO timestamp (defaults to 24h ago)
+        end_time: End time - can be microseconds (int), relative time, or ISO timestamp (defaults to now)
+        max_results: Maximum number of results to return (default: 50)
+        org_identifier: Organization identifier (default: "default")
+        timezone: Timezone for naive datetime strings (e.g., "Asia/Kolkata", "UTC"). If not provided, assumes UTC.
+
+    Returns:
+        Dictionary with search results and metadata
+
+    Examples:
+        # Using IST timezone with naive datetime
+        search_periscope_logs('SELECT * FROM "envoy_logs"',
+                            start_time="2025-10-04 10:20:00",
+                            end_time="2025-10-04 11:00:00",
+                            timezone="Asia/Kolkata")
+
+        # Using ISO timestamps with timezone offsets (no timezone param needed)
+        search_periscope_logs('SELECT * FROM "envoy_logs"',
+                            start_time="2025-10-04T10:20:00+05:30",
+                            end_time="2025-10-04T11:00:00+05:30")
+
+        # Using relative times
+        search_periscope_logs('SELECT * FROM "envoy_logs"', start_time="2h")
+    """
+    try:
+        # Convert time inputs to microseconds with timezone support
+        start_time_us = convert_time_to_microseconds(start_time, timezone) if start_time else None
+        end_time_us = convert_time_to_microseconds(end_time, timezone) if end_time else None
+
+        result = await periscope_search(
+            sql_query=sql_query,
+            start_time=start_time_us,
+            end_time=end_time_us,
+            size=max_results,
+            org_identifier=org_identifier
+        )
+
+        if "error" in result:
+            return {
+                "success": False,
+                "error": result["error"],
+                "logs": []
+            }
+
+        # Extract hits from Periscope response
+        hits = result.get("hits", [])
+
+        return {
+            "success": True,
+            "total": len(hits),
+            "logs": hits,
+            "query": sql_query,
+            "org_identifier": org_identifier
+        }
+
+    except Exception as e:
+        logger.error(f"Error searching Periscope logs: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+        return {
+            "success": False,
+            "error": str(e),
+            "logs": []
+        }
+
+@mcp.tool()
+async def search_periscope_errors(
+    hours: int = 24,
+    stream: str = "envoy_logs",
+    error_codes: Optional[str] = None,
+    org_identifier: str = "default",
+    ctx: Context = None
+) -> Dict:
+    """
+    Search for error logs in Periscope.
+
+    Args:
+        hours: Number of hours to look back (default: 24)
+        stream: Stream name to search (default: "envoy_logs")
+        error_codes: Error code pattern (default: "4%" for 4xx or "5%" for 5xx, None for >=400)
+        org_identifier: Organization identifier (default: "default")
+
+    Returns:
+        Dict containing error logs
+    """
+    try:
+        # Calculate time range
+        end_time = int(time.time() * 1000000)
+        start_time = end_time - (hours * 60 * 60 * 1000000)
+
+        # Build SQL query for errors
+        if error_codes:
+            sql_query = f'SELECT * FROM "{stream}" WHERE status_code LIKE \'{error_codes}\''
+        else:
+            sql_query = f'SELECT * FROM "{stream}" WHERE status_code >= 400'
+
+        result = await search_periscope_logs(
+            sql_query=sql_query,
+            start_time=start_time,
+            end_time=end_time,
+            max_results=100,
+            org_identifier=org_identifier,
+            ctx=ctx
+        )
+
+        if result.get("success"):
+            return {
+                "success": True,
+                "errors": result.get("logs", []),
+                "total": result.get("total", 0),
+                "hours": hours,
+                "stream": stream
+            }
+        else:
+            return result
+
+    except Exception as e:
+        logger.error(f"Error searching Periscope errors: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "errors": []
+        }
+
 def _generate_fallback_combined_analysis(analyses: List[Dict], is_function_based: bool = False) -> Dict:
     """
     Generate a combined analysis when Neurolink combination fails.
@@ -2596,6 +3179,122 @@ if __name__ == "__main__":
                                 },
                                 "required": ["index_pattern"]
                             }
+                        },
+                        {
+                            "name": "set_periscope_auth_token",
+                            "description": "Set the Periscope authentication token for the current session",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "auth_token": {
+                                        "type": "string",
+                                        "description": "The auth_tokens value from Periscope (base64 encoded JSON)"
+                                    }
+                                },
+                                "required": ["auth_token"]
+                            }
+                        },
+                        {
+                            "name": "get_periscope_streams",
+                            "description": "Get available Periscope log streams",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "org_identifier": {
+                                        "type": "string",
+                                        "description": "Organization identifier (default: 'default')"
+                                    }
+                                },
+                                "required": []
+                            }
+                        },
+                        {
+                            "name": "get_periscope_stream_schema",
+                            "description": "Get schema for a specific Periscope log stream",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "stream_name": {
+                                        "type": "string",
+                                        "description": "Name of the stream (e.g., 'envoy_logs', 'vayu_logs')"
+                                    },
+                                    "org_identifier": {
+                                        "type": "string",
+                                        "description": "Organization identifier (default: 'default')"
+                                    }
+                                },
+                                "required": ["stream_name"]
+                            }
+                        },
+                        {
+                            "name": "get_all_periscope_schemas",
+                            "description": "Get schemas for all available Periscope log streams",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "org_identifier": {
+                                        "type": "string",
+                                        "description": "Organization identifier (default: 'default')"
+                                    }
+                                },
+                                "required": []
+                            }
+                        },
+                        {
+                            "name": "search_periscope_logs",
+                            "description": "Search Periscope logs using SQL queries",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "sql_query": {
+                                        "type": "string",
+                                        "description": "SQL query to execute (e.g., 'SELECT * FROM \"envoy_logs\" WHERE status_code LIKE ''%50%''')"
+                                    },
+                                    "start_time": {
+                                        "anyOf": [{"type": "string"}, {"type": "integer"}],
+                                        "description": "Start time - can be microseconds (int), relative ('2h', '1d'), or ISO timestamp"
+                                    },
+                                    "end_time": {
+                                        "anyOf": [{"type": "string"}, {"type": "integer"}],
+                                        "description": "End time - can be microseconds (int), relative time, or ISO timestamp"
+                                    },
+                                    "max_results": {
+                                        "type": "integer",
+                                        "description": "Maximum number of results to return (default: 50)"
+                                    },
+                                    "org_identifier": {
+                                        "type": "string",
+                                        "description": "Organization identifier (default: 'default')"
+                                    }
+                                },
+                                "required": ["sql_query"]
+                            }
+                        },
+                        {
+                            "name": "search_periscope_errors",
+                            "description": "Search for error logs in Periscope",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "hours": {
+                                        "type": "integer",
+                                        "description": "Number of hours to look back (default: 24)"
+                                    },
+                                    "stream": {
+                                        "type": "string",
+                                        "description": "Stream name to search (default: 'envoy_logs')"
+                                    },
+                                    "error_codes": {
+                                        "type": "string",
+                                        "description": "Error code pattern (e.g., '4%' for 4xx or '5%' for 5xx)"
+                                    },
+                                    "org_identifier": {
+                                        "type": "string",
+                                        "description": "Organization identifier (default: 'default')"
+                                    }
+                                },
+                                "required": []
+                            }
                         }
                     ]
                     
@@ -2727,6 +3426,48 @@ if __name__ == "__main__":
                         "result": result,
                         "id": request_id
                     }
+                elif method == "set_periscope_auth_token":
+                    result = await set_periscope_auth_token(**params)
+                    return {
+                        "jsonrpc": "2.0",
+                        "result": result,
+                        "id": request_id
+                    }
+                elif method == "get_periscope_streams":
+                    result = await get_periscope_streams(**params)
+                    return {
+                        "jsonrpc": "2.0",
+                        "result": result,
+                        "id": request_id
+                    }
+                elif method == "get_periscope_stream_schema":
+                    result = await get_periscope_stream_schema(**params)
+                    return {
+                        "jsonrpc": "2.0",
+                        "result": result,
+                        "id": request_id
+                    }
+                elif method == "get_all_periscope_schemas":
+                    result = await get_all_periscope_schemas(**params)
+                    return {
+                        "jsonrpc": "2.0",
+                        "result": result,
+                        "id": request_id
+                    }
+                elif method == "search_periscope_logs":
+                    result = await search_periscope_logs(**params)
+                    return {
+                        "jsonrpc": "2.0",
+                        "result": result,
+                        "id": request_id
+                    }
+                elif method == "search_periscope_errors":
+                    result = await search_periscope_errors(**params)
+                    return {
+                        "jsonrpc": "2.0",
+                        "result": result,
+                        "id": request_id
+                    }
                 else:
                     # Method not found
                     return {
@@ -2845,6 +3586,30 @@ if __name__ == "__main__":
                     {
                         "name": "set_current_index",
                         "description": "Set the current index pattern to use for log searches"
+                    },
+                    {
+                        "name": "set_periscope_auth_token",
+                        "description": "Set the Periscope authentication token for the current session"
+                    },
+                    {
+                        "name": "get_periscope_streams",
+                        "description": "Get available Periscope log streams"
+                    },
+                    {
+                        "name": "get_periscope_stream_schema",
+                        "description": "Get schema for a specific Periscope log stream"
+                    },
+                    {
+                        "name": "get_all_periscope_schemas",
+                        "description": "Get schemas for all available Periscope log streams"
+                    },
+                    {
+                        "name": "search_periscope_logs",
+                        "description": "Search Periscope logs using SQL queries"
+                    },
+                    {
+                        "name": "search_periscope_errors",
+                        "description": "Search for error logs in Periscope"
                     }
                 ]
             }
@@ -2871,7 +3636,45 @@ if __name__ == "__main__":
             if not index_pattern:
                 return {"success": False, "message": "Index pattern is required"}
             return await set_current_index(index_pattern=index_pattern)
-        
+
+        # Periscope HTTP API endpoints
+        @app.post("/api/set_periscope_auth_token")
+        async def api_set_periscope_auth_token(request_data: dict):
+            """Set the Periscope authentication token."""
+            auth_token = request_data.get("auth_token")
+            if not auth_token:
+                return {"success": False, "message": "Auth token is required"}
+            return await set_periscope_auth_token(auth_token=auth_token)
+
+        @app.get("/api/get_periscope_streams")
+        async def api_get_periscope_streams(org_identifier: str = "default"):
+            """Get available Periscope streams."""
+            return await get_periscope_streams(org_identifier=org_identifier)
+
+        @app.post("/api/get_periscope_stream_schema")
+        async def api_get_periscope_stream_schema(request_data: dict):
+            """Get schema for a specific Periscope stream."""
+            stream_name = request_data.get("stream_name")
+            if not stream_name:
+                return {"success": False, "message": "Stream name is required"}
+            org_identifier = request_data.get("org_identifier", "default")
+            return await get_periscope_stream_schema(stream_name=stream_name, org_identifier=org_identifier)
+
+        @app.get("/api/get_all_periscope_schemas")
+        async def api_get_all_periscope_schemas(org_identifier: str = "default"):
+            """Get all Periscope schemas."""
+            return await get_all_periscope_schemas(org_identifier=org_identifier)
+
+        @app.post("/api/search_periscope_logs")
+        async def api_search_periscope_logs(request_data: dict):
+            """Search Periscope logs using SQL."""
+            return await search_periscope_logs(**request_data)
+
+        @app.post("/api/search_periscope_errors")
+        async def api_search_periscope_errors(request_data: dict):
+            """Search for errors in Periscope."""
+            return await search_periscope_errors(**request_data)
+
         # Start the FastAPI app
         uvicorn.run(app, host=host, port=port)
     else:

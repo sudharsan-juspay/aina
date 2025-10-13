@@ -3,7 +3,7 @@
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 
-> A powerful server that provides seamless access to Kibana logs through a convenient API, designed to work with Machine Control Protocol (MCP) and a standard HTTP interface.
+> A powerful server that provides seamless access to Kibana and Periscope logs through a convenient API, designed to work with Machine Control Protocol (MCP) and a standard HTTP interface.
 
 ## 📋 Table of Contents
 
@@ -26,18 +26,20 @@
 
 ## 🌟 Overview
 
-This project bridges the gap between your applications and Kibana logs by providing:
+This project bridges the gap between your applications and Kibana/Periscope logs by providing:
 
 1. A Kibana log access server using the MCP protocol
-2. HTTP API endpoints for log search and analysis
-3. Tools for debugging Kibana connection issues
-4. Fallback to mock data when Kibana is unavailable
+2. **Periscope log integration** with SQL-based querying
+3. HTTP API endpoints for log search and analysis
+4. Tools for debugging Kibana connection issues
+5. Fallback to mock data when Kibana is unavailable
 
 ##  Features
 
 - **Simple API**: Easy-to-use endpoints for log searching and analysis
-- **Flexible Authentication**: Multiple ways to provide authentication tokens
-- **Time-Based Searching**: Support for both absolute and relative time ranges
+- **Periscope Integration**: Full support for Periscope log streams with SQL-based querying
+- **Flexible Authentication**: Multiple ways to provide authentication tokens for both Kibana and Periscope
+- **Time-Based Searching**: Support for both absolute and relative time ranges with timezone support
 - **Pattern Analysis**: Tools to identify log patterns and extract errors
 - **Real-Time Streaming**: Monitor logs as they arrive
 - **🧠 AI-Powered Analysis**: Intelligent log summarization using [Neurolink](https://www.npmjs.com/package/@juspay/neurolink) with 9 AI providers
@@ -49,8 +51,9 @@ This project bridges the gap between your applications and Kibana logs by provid
 ### Prerequisites
 
 - Python 3.8+
-- Access to a Kibana instance
-- Kibana authentication token
+- Access to a Kibana instance (for Kibana features)
+- Access to a Periscope instance (for Periscope features)
+- Authentication tokens for the services you want to use
 
 ### Installation
 
@@ -211,11 +214,21 @@ The server will be available at http://localhost:8000
 | `/api/get_recent_logs` | Get the most recent logs | POST |
 | `/api/analyze_logs` | Analyze logs for patterns | POST |
 | `/api/extract_errors` | Extract error logs | POST |
-
 | `/api/summarize_logs` | 🧠 AI-powered log analysis with Neurolink | POST |
 | `/api/set_auth_token` | Set authentication token | POST |
 | `/api/discover_indexes` | Discover available Elasticsearch indexes | GET |
 | `/api/set_current_index` | Set the current index to use for searches | POST |
+
+#### Periscope Integration
+
+| Endpoint | Description | Method |
+|----------|-------------|--------|
+| `/api/set_periscope_auth_token` | Set Periscope authentication token | POST |
+| `/api/get_periscope_streams` | Get available Periscope log streams | GET |
+| `/api/get_periscope_stream_schema` | Get schema for a specific stream | POST |
+| `/api/get_all_periscope_schemas` | Get schemas for all available streams | GET |
+| `/api/search_periscope_logs` | Search Periscope logs using SQL queries | POST |
+| `/api/search_periscope_errors` | Search for error logs in Periscope | POST |
 
 ### Parameters
 
@@ -354,6 +367,84 @@ Response:
 ```
 
 After setting the index, all subsequent log searches will use the specified index until it's changed again.
+
+### Periscope Log Integration
+
+#### Set Periscope Authentication Token
+
+```bash
+curl -X POST http://localhost:8000/api/set_periscope_auth_token \
+  -H "Content-Type: application/json" \
+  -d '{
+    "auth_token": "your_base64_encoded_auth_token"
+  }'
+```
+
+To get your Periscope auth token:
+1. Log in to Periscope in your browser
+2. Open developer tools (F12)
+3. Go to Application → Cookies
+4. Find the `auth_tokens` cookie and copy its value (base64 encoded JSON)
+
+#### Get Available Periscope Streams
+
+```bash
+curl -X GET http://localhost:8000/api/get_periscope_streams
+```
+
+Response:
+```json
+{
+  "success": true,
+  "streams": ["envoy_logs", "vayu_logs", "lighthouse_logs"]
+}
+```
+
+#### Get Stream Schema
+
+```bash
+curl -X POST http://localhost:8000/api/get_periscope_stream_schema \
+  -H "Content-Type: application/json" \
+  -d '{
+    "stream_name": "envoy_logs"
+  }'
+```
+
+#### Search Periscope Logs with SQL
+
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT * FROM \"envoy_logs\" WHERE status_code LIKE '\''%50%'\''",
+    "start_time": "2h",
+    "max_results": 50
+  }'
+```
+
+**Timezone Support**: You can specify timestamps with timezone:
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_logs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql_query": "SELECT * FROM \"envoy_logs\"",
+    "start_time": "2025-10-04 10:20:00",
+    "end_time": "2025-10-04 11:00:00",
+    "timezone": "Asia/Kolkata"
+  }'
+```
+
+#### Search Periscope Errors
+
+```bash
+curl -X POST http://localhost:8000/api/search_periscope_errors \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hours": 24,
+    "stream": "envoy_logs",
+    "error_codes": "5%"
+  }'
+```
 
 ### AI-Powered Log Analysis
 
