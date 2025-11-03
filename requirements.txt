@@ -1,7 +1,7 @@
 annotated-types==0.7.0
 anyio==4.9.0
 certifi==2025.4.26
-click==8.2.1
+click==8.1.7
 elastic-transport==8.17.1
 elasticsearch==9.0.1
 fastapi==0.115.12
@@ -10,8 +10,8 @@ httpcore==1.0.9
 httpx==0.28.1
 httpx-sse==0.4.0
 idna==3.10
-loguru==0.7.3
-mcp==1.9.1
+loguru==0.7.2
+# mcp==1.9.1
 pydantic==2.11.5
 pydantic-settings==2.9.1
 pydantic_core==2.33.2
@@ -26,4 +26,14 @@ starlette==0.46.2
 typing-inspection==0.4.1
 typing_extensions==4.13.2
 urllib3==2.4.0
-uvicorn==0.34.2
+uvicorn==0.23.2
+cachetools==5.3.3
+
+# Observability (OpenTelemetry)
+opentelemetry-api==1.22.0
+opentelemetry-sdk==1.22.0
+opentelemetry-instrumentation-fastapi==0.43b0
+opentelemetry-exporter-otlp-proto-http==1.22.0
+
+# Security
+bcrypt==4.1.2

@@ -182,6 +182,51 @@ this will be triggered by user saying search based on functions
 | `/api/discover_indexes` | List available indexes | None |
 | `/api/set_current_index` | Select index for searches | `index_pattern` |
 
+## 🧠 AI-POWERED MEMORY BOARD
+
+The Memory Board is a stateful, short-term memory system that allows an AI agent to build context during a Root Cause Analysis (RCA) session. It helps the AI to track findings, avoid redundant work, and form more intelligent hypotheses.
+
+### Endpoints
+
+| Endpoint | Method | Purpose | Key Parameters |
+|---|---|---|---|
+| `/api/memory/create` | POST | Creates a new, named investigation board. | `name` |
+| `/api/memory/all` | GET | Lists all active investigation boards (ID and name). | None |
+| `/api/memory/{board_id}` | GET | Retrieves all findings for a specific board. | `board_id` |
+| `/api/memory/{board_id}/add_finding`| POST | Adds a structured finding to a board. | `board_id`, finding data |
+| `/api/memory/{board_id}/clear` | POST | Clears and deletes an investigation board. | `board_id` |
+
+### AI Workflow for Using the Memory Board
+
+1.  **Start Task & Check for Existing Work:** When a new RCA task begins, first call `GET /api/memory/all` to get a list of all active investigations.
+    *   Check if an investigation for the same issue already exists to avoid redundant work.
+    *   Check for related investigations that might provide context (e.g., a systemic error board).
+
+2.  **Create an Investigation Board:** If no relevant board exists, create a new one.
+    *   **Action:** Call `POST /api/memory/create`.
+    *   **Payload:** `{"name": "RCA for OrderID 12345 payment failure"}`
+    *   **Store the returned `board_id`** for all subsequent operations in this investigation.
+
+3.  **Add Findings as You Discover Them:** As you query logs and find important information (errors, anomalies, key events), add them to the board.
+    *   **Action:** Call `POST /api/memory/{board_id}/add_finding`.
+    *   **Payload:** A structured JSON object for the finding.
+        ```json
+        {
+          "timestamp": "2023-10-27T10:05:15Z",
+          "finding": "Payment failed due to 'Insufficient Funds' from Stripe.",
+          "source_log": { "...raw log object..." },
+          "attention_weight": 8,
+          "implication": "The issue is external, not a system bug. Verify the request sent to Stripe was correct."
+        }
+        ```
+
+4.  **Consult the Board to Inform Next Steps:** Before each new query, get the current state of the investigation to make a more intelligent decision.
+    *   **Action:** Call `GET /api/memory/{board_id}`.
+    *   **Logic:** Review the existing findings and their implications to decide what to query for next. Avoid re-discovering facts.
+
+5.  **End the Investigation:** Once the RCA is complete and you have reported the final summary to the user:
+    *   **Action:** Call `POST /api/memory/{board_id}/clear` to clean up the in-memory board.
+
 ## 🔎 SEARCH_LOGS ENDPOINT - DETAILED SPECIFICATION
 
 ### Required Parameters:

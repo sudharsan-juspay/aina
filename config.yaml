@@ -1,99 +1,74 @@
-# Elasticsearch / Kibana connection settings
+# ========================================
+# Kibana MCP Server Configuration
+# ========================================
+#
+# SECURITY GUIDELINES:
+# - NEVER store auth tokens, API keys, or passwords in this file
+# - Auth tokens: Set via API endpoints (POST /api/set_auth_token)
+# - API keys: Set via environment variables (export GOOGLE_AI_API_KEY=...)
+# - This file is for infrastructure and deployment settings only
+#
+# ========================================
+
+# Elasticsearch / Kibana Settings
 elasticsearch:
-  host: "kibana.sso.mum.breeze.juspay.net"
-  port: 443
-  index_prefix: ""  # Default index prefix - can be overridden with set_current_index
-  timestamp_field: "start_time" 
-  auth_cookie: ""  
-  verify_ssl: False
+  # REQUIRED: Your Kibana/Elasticsearch host (e.g., "kibana.example.com")
+  # Used in: src/clients/kibana_client.py
+  host: ""
+
+  # Timestamp field name used in your logs
+  # Common values: "@timestamp", "timestamp", "start_time"
+  # Used in: src/services/log_service.py
+  timestamp_field: "timestamp"
+
+  # SSL certificate verification
+  # Used in: src/clients/http_manager.py
+  verify_ssl: true
+
+  # Kibana API configuration
+  # Used in: src/clients/kibana_client.py
   kibana_api:
     version: "7.10.2"
     base_path: "/_plugin/kibana"
 
-# MCP Server settings
+# MCP Server Settings
 mcp_server:
-  name: "kibana-logs"
-  version: "1.0.0"
+  # Server bind address
+  # Used in: main.py
   host: "0.0.0.0"
+  
+  # Server port
+  # Used in: main.py
   port: 8000
-  transport: "http"
-  log_level: "info"  
-
-
-processing:
-  # Maximum number of logs to return in a single query
-  max_logs: 1000
-  # Time format for timestamps
-  time_format: "iso8601"
-  # Default time range for queries
-  default_time_range: "1d"
-  # Default fields to include in log results
-  default_fields: ["@timestamp", "level", "message", "event", "context"]
-  # Fields to extract for code correlation
-  # Cache TTL for repeated queries
-  cache_ttl_seconds: 300
-  # Query timeout
-  timeout_seconds: 60
-
-# Log source definitions
-log_sources:
-  - name: "istio-logs"
-    description: "Istio service mesh logs"
-    index_pattern: "istio-logs-v2*"
-    timestamp_field: "timestamp"  
-    default_fields:
-      - "message"
-      - "level"
-      - "service"
   
-  - name: "envoy-edge"
-    description: "Envoy edge proxy logs"
-    index_pattern: "envoy-edge*"
-    timestamp_field: "timestamp"  
-    default_fields:
-      - "message"
-      - "level"
-      - "service"
+  # Log level: debug, info, warning, error, critical
+  # Used in: src/core/logging_config.py
+  log_level: "info"
 
-  - name: "breeze-logs"
-    description: "Breeze application logs"
-    index_pattern: "breeze-v2*"
-    timestamp_field: "timestamp"  
-    default_fields:
-      - "message"
-      - "level"
-      - "service"
+# Logging Configuration
+logging:
+  # Enable file logging (logs to file in addition to console)
+  # Used in: src/core/logging_config.py
+  enable_file: false
 
+  # Log file path (only used if enable_file is true)
+  file_path: "logs/kibana_mcp_server.log"
 
-log_source:
- 
-  type: "kibana_api" 
-  
-  filebeat:
-    host: "kibana.sso.mum.breeze.juspay.net"
-    port: 5044
-    
-  direct_path:
-    path: "/var/log/kibana.json"
-    
-  logstash:
-    host: "kibana.sso.mum.breeze.juspay.net"
-    port: 5044 
+  # Log rotation policy (e.g., "10 MB", "1 day", "1 week")
+  rotation: "10 MB"
 
-# AI Provider API Keys (optional - will override environment variables if set)
-# It's generally recommended to use environment variables for secrets,
-# but you can configure them here for convenience.
-# Ensure this file is appropriately secured if you store keys here.
-ai_providers:
-  google_ai_api_key: ""  # e.g., "AIza..."
-  openai_api_key: ""     # e.g., "sk-..."
-  anthropic_api_key: ""  # e.g., "sk-ant-..."
-  # Add other Neurolink supported provider keys here as needed
-  # Example: bedrock_access_key_id: "", bedrock_secret_access_key: "" 
+  # Log retention policy (e.g., "30 days", "1 week")
+  retention: "30 days"
 
-# AI response configuration
-ai_response_settings:
-  max_tokens: 8000000  # Maximum tokens for AI responses
-  temperature: 0.2     # Lower temperature for more detailed and precise output
-  detailed_mode: true  # Enable detailed mode for responses
-  timeout_ms: 600000   # 10 minutes timeout in milliseconds 
+# Periscope Configuration (optional - only needed if using Periscope)
+periscope:
+  # Periscope host (e.g., "periscope.example.com")
+  # Used in: src/clients/periscope_client.py
+  # Default: "periscope.breezesdk.store"
+  host: ""
+
+# Timeout Configuration
+timeouts:
+  # Kibana request timeout (in seconds)
+  # Used in: src/services/log_service.py
+  kibana_request_timeout: 30

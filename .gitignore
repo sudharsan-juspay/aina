@@ -1,0 +1,336 @@
+# Kibana MCP Server - .gitignore
+
+# ==========================================
+# Python
+# ==========================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytest.ini
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+KIBANA_E/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# ==========================================
+# IDEs and Editors
+# ==========================================
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# ==========================================
+# Operating System
+# ==========================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ==========================================
+# Project Specific
+# ==========================================
+
+# Logs
+logs/
+*.log
+
+# Backup files
+*.backup
+*.bak
+*.backup.*
+*~
+
+# Configuration backups (keep the .full backup in repo)
+# config.yaml.backup
+# config.yaml.backup.full is kept for reference
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Authentication tokens (NEVER commit these!)
+*.token
+*.key
+*.pem
+*.crt
+auth_tokens.txt
+tokens/
+
+# AI Provider API Keys (NEVER commit these!)
+.env.local
+.env.*.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Node modules (for Neurolink if installed locally)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Test outputs
+test_output/
+test_results/
+
+# Cache directories
+.cache/
+cache/
+
+# Profiling data
+*.prof
+*.lprof
+
+# ==========================================
+# Generated Documentation (Optional)
+# ==========================================
+
+# Keep these for reference, but uncomment if you want to exclude:
+# CACHING_IMPLEMENTATION_SUMMARY.md
+# TIMEZONE_TESTING_REPORT.md
+# CONFIG_USAGE_ANALYSIS.md
+# KIBANA_INDEXES_COMPLETE_ANALYSIS.md
+# 5XX_ERROR_ANALYSIS_REPORT.md
+# TIMEZONE_FIX_SUMMARY.md
+# MODULAR_VS_LEGACY_COMPARISON.md
+
+# ==========================================
+# Build outputs
+# ==========================================
+
+*.o
+*.a
+*.lib
+*.dll
+*.exe
+*.out
+
+# ==========================================
+# Archive files
+# ==========================================
+
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# ==========================================
+# Misc
+# ==========================================
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory
+.nyc_output
+
+# Grunt intermediate storage
+.grunt
+
+# Bower dependency directory
+bower_components
+
+# Lock files (optional - uncomment if needed)
+# poetry.lock
+# pdm.lock
+
+# ==========================================
+# Keep These Files (Force include if needed)
+# ==========================================
+
+# !important_file.txt
+# !config.yaml
+# !requirements.txt
+# !README.md
+# !LICENSE
+
